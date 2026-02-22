@@ -1,0 +1,5 @@
+{
+  "name": "Stockholm Subway Tracker",
+  "description": "Live metro departures for Gärdet and other Stockholm stations.",
+  "requestFramePermissions": []
+}
