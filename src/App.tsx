@@ -2,8 +2,9 @@ import { useState, useEffect, FormEvent } from "react";
 import { Train, Clock, AlertCircle, Search, MapPin, Loader2, ArrowRight } from "lucide-react";
 import { cn } from "./lib/utils";
 import { format, parseISO } from "date-fns";
-import { MapContainer, TileLayer, Marker, Tooltip, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Tooltip, useMap, GeoJSON, CircleMarker } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import * as turf from "@turf/turf";
 import L from "leaflet";
 
 // Fix leaflet icon issue in Vite
@@ -122,10 +123,10 @@ function StationMarker({ site, onSelect }: { site: Site; onSelect: () => void; k
 export default function App() {
   const [currentSite, setCurrentSite] = useState<Site>({
     Name: "Gärdet",
-    SiteId: "9203",
+    SiteId: "9221",
     Type: "Station",
-    X: "18.0981",
-    Y: "59.3465"
+    X: "18.1022811307506",
+    Y: "59.3480838652274"
   });
   const [siteId, setSiteId] = useState(currentSite.SiteId);
   const [siteName, setSiteName] = useState(currentSite.Name);
@@ -138,6 +139,14 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<Site[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [metroGeoJSON, setMetroGeoJSON] = useState<any>(null);
+
+  useEffect(() => {
+    fetch("/metro.geojson")
+      .then(res => res.json())
+      .then(data => setMetroGeoJSON(data))
+      .catch(console.error);
+  }, []);
 
   const fetchDepartures = async (id: string) => {
     setLoading(true);
@@ -180,7 +189,7 @@ export default function App() {
     setIsSearching(true);
     setError(null);
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
+      const res = await fetch(`/api/ai-search?q=${encodeURIComponent(searchQuery)}`);
       const data = await res.json();
 
       if (data.error) {
@@ -216,7 +225,6 @@ export default function App() {
     return acc;
   }, {} as Record<number, Departure[]>);
 
-  // Helper to get line color
   const getLineColor = (groupOfLine: string) => {
     if (!groupOfLine) return "bg-gray-500";
     if (groupOfLine.toLowerCase().includes("röda")) return "bg-red-500";
@@ -225,9 +233,128 @@ export default function App() {
     return "bg-gray-500";
   };
 
+  const getLineColorHex = (groupOfLine: string) => {
+    if (!groupOfLine) return "#6b7280";
+    if (groupOfLine.toLowerCase().includes("röda")) return "#ef4444";
+    if (groupOfLine.toLowerCase().includes("gröna")) return "#22c55e";
+    if (groupOfLine.toLowerCase().includes("blå")) return "#3b82f6";
+    return "#6b7280";
+  };
+
+  const styleMetroLine = (feature: any) => {
+    const ref = feature?.properties?.ref;
+    if (['13','14'].includes(ref)) return { color: "#ef4444", weight: 3, opacity: 0.6 };
+    if (['17','18','19'].includes(ref)) return { color: "#22c55e", weight: 3, opacity: 0.6 };
+    if (['10','11'].includes(ref)) return { color: "#3b82f6", weight: 3, opacity: 0.6 };
+    return { color: "#6b7280", weight: 2, opacity: 0.4 };
+  };
+
+  const renderLiveTrains = () => {
+    if (!metroGeoJSON || !departures.length) return null;
+
+    const stationPt = turf.point([parseFloat(currentSite.X), parseFloat(currentSite.Y)]);
+
+    return departures.map((dep, idx) => {
+      if (!dep.expected) return null;
+      
+      const lineFeature = metroGeoJSON.features.find((f: any) => f.properties?.ref === dep.line.designation);
+      if (!lineFeature || (lineFeature.geometry.type !== "LineString" && lineFeature.geometry.type !== "MultiLineString")) return null;
+
+      // Extract a basic LineString if it's MultiLineString for simplicity
+      let lineGeometry = lineFeature;
+      if (lineFeature.geometry.type === "MultiLineString") {
+         // Create a simple linestring from the first coordinate array, overpass might return multilinestrings
+         lineGeometry = turf.lineString(lineFeature.geometry.coordinates[0]);
+      }
+
+      const minToArrival = (new Date(dep.expected).getTime() - new Date().getTime()) / 60000;
+      if (minToArrival < 0) return null;
+
+      const distanceTrainKm = minToArrival * 0.6; // assuming ~36km/h avg speed -> 0.6km/min
+      
+      try {
+        const nearest = turf.nearestPointOnLine(lineGeometry, stationPt);
+        const distToStation = nearest.properties.location ?? 0;
+
+        const isDir1 = dep.direction_code === 1;
+        let trainDistAlongLine = isDir1 ? distToStation - distanceTrainKm : distToStation + distanceTrainKm;
+        
+        const totalLength = turf.length(lineGeometry);
+        trainDistAlongLine = Math.max(0, Math.min(totalLength, trainDistAlongLine));
+
+        const trainPt = turf.along(lineGeometry, trainDistAlongLine);
+        const [lon, lat] = trainPt.geometry.coordinates;
+
+        const isArriving = minToArrival <= 1;
+
+        return (
+          <CircleMarker 
+            key={`${dep.line.designation}-${dep.direction_code}-${idx}-${minToArrival}`}
+            center={[lat, lon]} 
+            radius={isArriving ? 8 : 5}
+            pathOptions={{ 
+              color: isArriving ? '#fff' : '#000',
+              fillColor: getLineColorHex(dep.line.group_of_lines),
+              fillOpacity: 1,
+              weight: isArriving ? 3 : 2
+            }}
+          >
+            <Tooltip className="!bg-[#141414] !text-white border-white/20 !rounded-xl">
+              <span className="font-bold">{dep.line.designation} {dep.destination}</span>
+              <span className="block text-xs text-gray-400 mt-0.5 opacity-80">{Math.round(minToArrival)} min away</span>
+            </Tooltip>
+          </CircleMarker>
+        );
+      } catch (err) {
+        return null; // Ignore spatial calculation errors on messy lines
+      }
+    });
+  };
+
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-red-500/30">
-      <div className="max-w-md mx-auto p-4 sm:p-6 md:p-8">
+    <div className="h-screen w-screen overflow-hidden relative bg-[#0a0a0a] text-white font-sans selection:bg-red-500/30">
+      
+      {/* Map Layer */}
+      <div className="absolute inset-0 z-0">
+        <MapContainer 
+          center={[parseFloat(currentSite.Y), parseFloat(currentSite.X)]} 
+          zoom={14} 
+          className="h-full w-full"
+          zoomControl={false}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://carto.com/attributions">CARTO</a>'
+            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          />
+          
+          {metroGeoJSON && (
+            <GeoJSON 
+              data={{
+                ...metroGeoJSON,
+                features: metroGeoJSON.features.filter((f: any) => f.geometry.type !== "Point" && f.geometry.type !== "MultiPoint")
+              }} 
+              style={styleMetroLine} 
+            />
+          )}
+
+          <MapUpdater results={searchResults.length > 0 ? searchResults : [currentSite]} />
+          
+          {searchResults.length > 0 ? (
+            searchResults.map(site => (
+              <StationMarker key={site.SiteId} site={site} onSelect={() => selectSite(site)} />
+            ))
+          ) : (
+            <StationMarker key={currentSite.SiteId} site={currentSite} onSelect={() => {}} />
+          )}
+
+          {/* Render live train trackers */}
+          {renderLiveTrains()}
+        </MapContainer>
+      </div>
+
+      {/* Overlay UI Panel */}
+      <div className="absolute z-10 top-4 left-4 w-[calc(100%-2rem)] max-w-sm sm:w-[400px] max-h-[calc(100vh-2rem)] overflow-y-auto bg-black/80 backdrop-blur-2xl rounded-3xl border border-white/10 shadow-2xl custom-scrollbar pointer-events-auto">
+        <div className="p-6">
         
         {/* Header */}
         <header className="flex items-center justify-between mb-8">
@@ -249,24 +376,7 @@ export default function App() {
           </button>
         </header>
 
-        {/* Map */}
-        <div className="mb-8 h-48 w-full rounded-2xl overflow-hidden border border-white/10 relative z-0">
-          <MapContainer center={[parseFloat(currentSite.Y), parseFloat(currentSite.X)]} zoom={14} className="h-full w-full">
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            <MapUpdater results={searchResults.length > 0 ? searchResults : [currentSite]} />
-            
-            {searchResults.length > 0 ? (
-              searchResults.map(site => (
-                <StationMarker key={site.SiteId} site={site} onSelect={() => selectSite(site)} />
-              ))
-            ) : (
-              <StationMarker key={currentSite.SiteId} site={currentSite} onSelect={() => {}} />
-            )}
-          </MapContainer>
-        </div>
+
 
         {/* Search Panel */}
         {showSearch && (
@@ -276,7 +386,7 @@ export default function App() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search station..."
+                placeholder="Ask AI for a station... (e.g. 'central station')"
                 className="flex-1 bg-black/50 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-red-500/50 transition-colors"
               />
               <button 
@@ -385,6 +495,7 @@ export default function App() {
             </p>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
