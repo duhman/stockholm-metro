@@ -1,20 +1,43 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Stockholm Metro Tracker
 
-# Run and deploy your AI Studio app
+Live Tunnelbana departures with on-map train positions, powered by the public [SL Transport API](https://www.trafiklab.se/api/our-apis/sl/transport/) and a small Express + React 19 app.
 
-This contains everything you need to run your app locally.
+The default view is Gärdet; you can search by address or landmark, and the map projects the next trains along the line geometry from OpenStreetMap.
 
-View your app in AI Studio: https://ai.studio/apps/1a225112-8f59-4863-830b-3a54f99ac95c
+## Run locally
 
-## Run Locally
+Requires Node.js 20+.
 
-**Prerequisites:**  Node.js
+```sh
+npm install
+npm run dev    # http://localhost:3000 (Express + Vite middleware)
+```
 
+For production:
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```sh
+npm run build  # builds the SPA into dist/
+npm start      # serves dist/ + the API via Express on port 3000
+```
+
+## Configuration
+
+`.env.local` (preferred) or `.env`. See `.env.example`.
+
+- `GEMINI_API_KEY` — optional. Enables natural-language search ("central station" → T-Centralen) via Gemini. Without it the `/api/ai-search` endpoint returns 503; departures and the map still work.
+- `PORT` — optional, defaults to `3000`.
+
+## Scripts
+
+- `npm run dev` — start Express + Vite middleware on port 3000.
+- `npm run build` — build the SPA into `dist/`.
+- `npm run preview` — Vite-only preview (no API).
+- `npm start` — production: serves `dist/` + API.
+- `npm run lint` — `tsc --noEmit`.
+- `npm run clean` — remove `dist/`.
+
+## Attribution
+
+- Departures and station data: [Storstockholms Lokaltrafik](https://sl.se/) via the SL Transport API.
+- Metro line geometry: © OpenStreetMap contributors (extracted from the `route=subway` relations under `network=SL`).
+- Basemap tiles: © [CARTO](https://carto.com/attributions).
